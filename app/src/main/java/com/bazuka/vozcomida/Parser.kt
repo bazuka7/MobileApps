@@ -5,7 +5,12 @@ import java.util.Calendar
 
 data class ParsedItem(val name: String, val qty: String, val kcal: Int?)
 
-data class ParsedMeal(val meal: String, val items: List<ParsedItem>)
+data class ParsedMeal(
+    val meal: String,
+    val items: List<ParsedItem>,
+    val hour: Int? = null,
+    val minute: Int = 0
+)
 
 object Meals {
     const val DESAYUNO = "Desayuno"
@@ -69,9 +74,31 @@ object Parser {
         }
     }
 
+    private val timeRegex = Regex(
+        "\\ba las (\\d{1,2})(?:[:.h](\\d{2})| y (media|cuarto)| menos cuarto)?" +
+            "(?:\\s*(de la manana|de la tarde|de la noche|de la madrugada|am|pm|a m|p m))?"
+    )
+
+    /** Extrae "a las 8", "a las 14:30", "a las 8 y media", "a las 9 de la noche". */
+    private fun extractTime(t: String): Triple<String, Int, Int>? {
+        val m = timeRegex.find(t) ?: return null
+        var h = m.groupValues[1].toInt()
+        var min = m.groupValues[2].toIntOrNull() ?: 0
+        when (m.groupValues[3]) { "media" -> min = 30; "cuarto" -> min = 15 }
+        if (m.value.contains("menos cuarto")) { h -= 1; min = 45 }
+        val suffix = m.groupValues[4]
+        if ((suffix.contains("tarde") || suffix.contains("noche") || suffix.startsWith("p")) && h < 12) h += 12
+        if (h < 0 || h > 23 || min > 59) return null
+        return Triple(t.replace(m.value, " "), h, min)
+    }
+
     fun parse(raw: String): ParsedMeal? {
         var t = normalize(raw)
         if (t.isEmpty()) return null
+
+        var hour: Int? = null
+        var minute = 0
+        extractTime(t)?.let { (rest, h, m) -> t = rest; hour = h; minute = m }
 
         var meal: String? = null
         for ((name, rx) in mealPatterns) {
@@ -91,7 +118,7 @@ object Parser {
 
         val items = parts.mapNotNull { parseItem(it) }
         if (items.isEmpty()) return null
-        return ParsedMeal(meal ?: defaultMeal(), items)
+        return ParsedMeal(meal ?: defaultMeal(), items, hour, minute)
     }
 
     private fun parseItem(part: String): ParsedItem? {

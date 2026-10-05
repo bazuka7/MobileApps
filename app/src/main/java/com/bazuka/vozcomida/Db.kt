@@ -37,6 +37,14 @@ class Db(context: Context) : SQLiteOpenHelper(context, "comidas.db", null, 1) {
         return writableDatabase.insert("entries", null, cv)
     }
 
+    fun update(e: Entry) {
+        val cv = ContentValues().apply {
+            put("ts", e.ts); put("meal", e.meal); put("name", e.name); put("qty", e.qty)
+            if (e.kcal != null) put("kcal", e.kcal) else putNull("kcal")
+        }
+        writableDatabase.update("entries", cv, "id = ?", arrayOf(e.id.toString()))
+    }
+
     fun delete(id: Long) {
         writableDatabase.delete("entries", "id = ?", arrayOf(id.toString()))
     }

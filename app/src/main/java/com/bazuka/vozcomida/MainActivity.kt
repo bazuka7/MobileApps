@@ -3,6 +3,7 @@ package com.bazuka.vozcomida
 import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
+import android.app.TimePickerDialog
 import android.content.Context
 import android.content.Intent
 import android.content.pm.PackageManager
@@ -15,11 +16,14 @@ import android.speech.RecognizerIntent
 import android.speech.SpeechRecognizer
 import android.view.Gravity
 import android.view.View
+import android.text.InputType
 import android.view.inputmethod.EditorInfo
+import android.widget.ArrayAdapter
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.ScrollView
+import android.widget.Spinner
 import android.widget.TextView
 import android.widget.Toast
 import java.text.SimpleDateFormat
@@ -41,6 +45,8 @@ class MainActivity : Activity() {
     private lateinit var statusText: TextView
     private lateinit var micButton: Button
     private lateinit var input: EditText
+    private lateinit var timeChip: TextView
+    private var manualTime: Pair<Int, Int>? = null
 
     private var recognizer: SpeechRecognizer? = null
     private var listening = false
@@ -117,7 +123,7 @@ class MainActivity : Activity() {
             elevation = dp(8).toFloat()
         }
         statusText = TextView(this).apply {
-            text = "Toca el micrófono y di, por ejemplo:\n\"Desayuno dos huevos y una tostada\""
+            text = "Toca el micrófono y di, por ejemplo:\n\"Desayuno a las 8 y media dos huevos y una tostada\"\nToca un registro para editarlo."
             gravity = Gravity.CENTER; textSize = 14f; setTextColor(Color.DKGRAY)
         }
         micButton = Button(this).apply {
@@ -138,6 +144,14 @@ class MainActivity : Activity() {
         }
         bottom.addView(statusText, LinearLayout.LayoutParams(-1, -2))
         bottom.addView(micButton, LinearLayout.LayoutParams(dp(88), dp(88)).apply { topMargin = dp(8) })
+        timeChip = TextView(this).apply {
+            textSize = 14f; setTextColor(green); gravity = Gravity.CENTER
+            setPadding(dp(12), dp(8), dp(12), dp(8))
+            setOnClickListener { pickManualTime() }
+            setOnLongClickListener { manualTime = null; updateTimeChip(); true }
+        }
+        updateTimeChip()
+        bottom.addView(timeChip, LinearLayout.LayoutParams(-2, -2))
         bottom.addView(input, LinearLayout.LayoutParams(-1, -2))
         root.addView(bottom, LinearLayout.LayoutParams(-1, -2))
 
@@ -213,6 +227,7 @@ class MainActivity : Activity() {
         }
         row.addView(col, LinearLayout.LayoutParams(0, -2, 1f))
         row.addView(del)
+        col.setOnClickListener { showEdit(e) }
         return LinearLayout(this).apply {
             setPadding(0, dp(2), 0, dp(2)); addView(row, LinearLayout.LayoutParams(-1, -2))
         }
@@ -310,11 +325,76 @@ class MainActivity : Activity() {
         val cal = Calendar.getInstance().apply {
             set(Calendar.YEAR, day.get(Calendar.YEAR))
             set(Calendar.DAY_OF_YEAR, day.get(Calendar.DAY_OF_YEAR))
+            val t = if (parsed.hour != null) parsed.hour to parsed.minute else manualTime
+            if (t != null) {
+                set(Calendar.HOUR_OF_DAY, t.first); set(Calendar.MINUTE, t.second)
+                set(Calendar.SECOND, 0); set(Calendar.MILLISECOND, 0)
+            }
         }
+        manualTime = null
+        updateTimeChip()
         parsed.items.forEachIndexed { i, item -> db.insert(cal.timeInMillis + i, parsed.meal, item) }
-        status("✔ ${parsed.meal}: " + parsed.items.joinToString(", ") { "${it.qty} ${it.name}" } +
+        status("✔ ${parsed.meal} ${timeFmt.format(cal.time)}: " + parsed.items.joinToString(", ") { "${it.qty} ${it.name}" } +
             "\n(di \"borrar último\" para deshacer)")
         refresh()
+    }
+
+    private fun updateTimeChip() {
+        val t = manualTime
+        timeChip.text = if (t == null) "🕒 Hora: ahora (toca para cambiar)"
+        else "🕒 Hora: %02d:%02d (mantén pulsado para volver a ahora)".format(t.first, t.second)
+    }
+
+    private fun pickManualTime() {
+        val now = Calendar.getInstance()
+        val cur = manualTime ?: (now.get(Calendar.HOUR_OF_DAY) to now.get(Calendar.MINUTE))
+        TimePickerDialog(this, { _, h, m -> manualTime = h to m; updateTimeChip() },
+            cur.first, cur.second, true).show()
+    }
+
+    /** Editor de un registro: comida, hora, alimento, cantidad y calorías. */
+    private fun showEdit(e: Entry) {
+        val cal = Calendar.getInstance().apply { timeInMillis = e.ts }
+        var hour = cal.get(Calendar.HOUR_OF_DAY)
+        var minute = cal.get(Calendar.MINUTE)
+
+        val box = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(dp(20), dp(8), dp(20), 0)
+        }
+        val meal = Spinner(this).apply {
+            adapter = ArrayAdapter(this@MainActivity, android.R.layout.simple_spinner_dropdown_item, Meals.ALL)
+            setSelection(Meals.ALL.indexOf(e.meal).coerceAtLeast(0))
+        }
+        val timeBtn = Button(this)
+        fun showTime() { timeBtn.text = "🕒 Hora: %02d:%02d".format(hour, minute) }
+        showTime()
+        timeBtn.setOnClickListener {
+            TimePickerDialog(this, { _, h, m -> hour = h; minute = m; showTime() }, hour, minute, true).show()
+        }
+        val name = EditText(this).apply { hint = "Alimento"; setText(e.name) }
+        val qty = EditText(this).apply { hint = "Cantidad"; setText(e.qty) }
+        val kcal = EditText(this).apply {
+            hint = "Calorías (opcional)"; inputType = InputType.TYPE_CLASS_NUMBER
+            setText(e.kcal?.toString() ?: "")
+        }
+        listOf(meal, timeBtn, name, qty, kcal).forEach { box.addView(it, LinearLayout.LayoutParams(-1, -2)) }
+
+        AlertDialog.Builder(this)
+            .setTitle("Editar registro")
+            .setView(box)
+            .setPositiveButton("Guardar") { _, _ ->
+                val n = name.text.toString().trim()
+                if (n.isEmpty()) return@setPositiveButton
+                cal.set(Calendar.HOUR_OF_DAY, hour); cal.set(Calendar.MINUTE, minute)
+                db.update(Entry(
+                    e.id, cal.timeInMillis, meal.selectedItem as String, n,
+                    qty.text.toString().trim().ifEmpty { "1" }, kcal.text.toString().toIntOrNull()
+                ))
+                refresh()
+            }
+            .setNegativeButton("Cancelar", null)
+            .show()
     }
 
     private fun exportCsv() {
